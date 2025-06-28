@@ -1,0 +1,20 @@
+{
+	"name": "Go & AWS",
+	"image": "mcr.microsoft.com/vscode/devcontainers/go:1-1.22-bullseye",
+	"features": {
+		"ghcr.io/devcontainers/features/aws-cli:1": {}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"golang.Go",
+				"ms-azuretools.vscode-docker",
+				"mutantdino.resourcemonitor"
+			]
+		}
+	},
+	"postCreateCommand": "go mod init lazyecs && go get github.com/aws/aws-sdk-go-v2/config github.com/aws/aws-sdk-go-v2/service/ecs",
+	"mounts": [
+		"source=${localEnv:HOME}/.aws,target=/home/vscode/.aws,type=bind,consistency=cached"
+	]
+}
