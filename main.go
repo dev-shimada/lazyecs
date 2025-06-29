@@ -24,6 +24,7 @@ const awsTimeout = 30 * time.Second
 type ECSAPI interface {
 	ListClusters(ctx context.Context, params *ecs.ListClustersInput, optFns ...func(*ecs.Options)) (*ecs.ListClustersOutput, error)
 	ListServices(ctx context.Context, params *ecs.ListServicesInput, optFns ...func(*ecs.Options)) (*ecs.ListServicesOutput, error)
+	DescribeServices(ctx context.Context, params *ecs.DescribeServicesInput, optFns ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error)
 	ListTasks(ctx context.Context, params *ecs.ListTasksInput, optFns ...func(*ecs.Options)) (*ecs.ListTasksOutput, error)
 	DescribeTasks(ctx context.Context, params *ecs.DescribeTasksInput, optFns ...func(*ecs.Options)) (*ecs.DescribeTasksOutput, error)
 	DescribeTaskDefinition(ctx context.Context, params *ecs.DescribeTaskDefinitionInput, optFns ...func(*ecs.Options)) (*ecs.DescribeTaskDefinitionOutput, error)
@@ -251,7 +252,7 @@ func (a *App) setupUI() {
 		SetDynamicColors(true).
 		SetRegions(true).
 		SetWordWrap(true)
-	a.mainContent.SetBorder(true).SetTitle("Content (d: details, l: logs, s: stop, r: restart)")
+	a.mainContent.SetBorder(true).SetTitle("Content (d: details, l: logs, s: stop, r: restart, t: task def)")
 
 	leftPane := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.clustersList, 0, 1, true).
@@ -283,6 +284,10 @@ func (a *App) setupUI() {
 		case 'r':
 			if a.selectedTaskArn != "" {
 				a.showRestartTaskModal()
+			}
+		case 't':
+			if a.selectedTaskArn != "" {
+				a.loadTaskDefinitionDetails(a.selectedClusterArn, a.selectedTaskArn)
 			}
 		}
 		return event
@@ -339,7 +344,7 @@ func (a *App) showRestartTaskModal() {
 }
 
 func (a *App) restartTask(clusterArn, taskArn string) {
-		a.app.QueueUpdateDraw(func() {
+	a.app.QueueUpdateDraw(func() {
 		a.mainContent.SetText(fmt.Sprintf("Restarting task %s...", taskArn))
 	})
 
@@ -498,6 +503,60 @@ func (a *App) loadTaskDetails(clusterArn string, taskArn string) {
 				builder.WriteString(fmt.Sprintf("    [cyan]Status: [white]%s\n", *container.LastStatus))
 				if container.ExitCode != nil {
 					builder.WriteString(fmt.Sprintf("    [cyan]Exit Code: [white]%d\n", *container.ExitCode))
+				}
+			}
+
+			a.mainContent.SetText(builder.String())
+		})
+	}()
+}
+
+func (a *App) loadTaskDefinitionDetails(clusterArn string, taskArn string) {
+	if clusterArn == "" || taskArn == "" {
+		return
+	}
+
+	a.app.QueueUpdateDraw(func() {
+		a.mainContent.SetText("Loading task definition details...")
+	})
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), awsTimeout)
+		defer cancel()
+
+		task, err := a.ecs.GetTaskDetails(ctx, clusterArn, taskArn)
+		if err != nil {
+			a.app.QueueUpdateDraw(func() { a.mainContent.SetText(fmt.Sprintf("[red]Error getting task details: %v", err)) })
+			return
+		}
+
+		taskDef, err := a.ecs.GetTaskDefinition(ctx, *task.TaskDefinitionArn)
+		if err != nil {
+			a.app.QueueUpdateDraw(func() { a.mainContent.SetText(fmt.Sprintf("[red]Error getting task definition: %v", err)) })
+			return
+		}
+
+		a.app.QueueUpdateDraw(func() {
+			var builder strings.Builder
+			builder.WriteString(fmt.Sprintf("[yellow]Task Definition ARN: [white]%s\n", *taskDef.TaskDefinitionArn))
+			builder.WriteString(fmt.Sprintf("[yellow]Family: [white]%s\n", *taskDef.Family))
+			builder.WriteString(fmt.Sprintf("[yellow]Revision: [white]%d\n", taskDef.Revision))
+			builder.WriteString(fmt.Sprintf("[yellow]CPU: [white]%s\n", *taskDef.Cpu))
+			builder.WriteString(fmt.Sprintf("[yellow]Memory: [white]%s\n", *taskDef.Memory))
+
+			builder.WriteString("\n[yellow]Containers:\n")
+			for _, container := range taskDef.ContainerDefinitions {
+				builder.WriteString(fmt.Sprintf("  [green]Name: [white]%s\n", *container.Name))
+				builder.WriteString(fmt.Sprintf("    [cyan]Image: [white]%s\n", *container.Image))
+				if len(container.PortMappings) > 0 {
+					builder.WriteString("    [cyan]Port Mappings:\n")
+					for _, pm := range container.PortMappings {
+						proto := "tcp"
+						if pm.Protocol == types.TransportProtocolUdp {
+							proto = "udp"
+						}
+						builder.WriteString(fmt.Sprintf("      [blue]Container Port: [white]%d/%s\n", *pm.ContainerPort, proto))
+					}
 				}
 			}
 
